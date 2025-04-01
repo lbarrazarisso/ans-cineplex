@@ -3,7 +3,7 @@
   gather_facts: no
   vars:
     path_local: /home/admincp/axpos-deployment
-    log_file: revision_conect-so-arqu.log
+    log_file: revision_conect-so-arqu-ul.log
 
   serial: 10
 
@@ -76,15 +76,47 @@
 
         - name: Obtener arquitectura (bits)
           ansible.windows.win_shell: |
-            echo $([System.Environment]::Is64BitOperatingSystem ? "64" : "32")
+            if([Environment]::Is64BitOperatingSystem) { '64' } else { '32' }
           register: arqu_bits
-        
+            #echo $([System.Environment]::Is64BitOperatingSystem ? "64" : "32")
+
+        ######################################################################
+        # OBTIENE UNIDADES LÓGICAS Y ESPACIOS DISPONIBLES
+        ######################################################################
+
+        - name: Get logical drives information
+          win_shell: |
+            Get-Volume | Where-Object {$_.DriveLetter} | ForEach-Object {
+              [PSCustomObject]@{
+                  DriveLetter = $_.DriveLetter
+                  Label = $_.FileSystemLabel
+                  TotalSizeGB = [math]::Round($_.Size/1GB, 2)
+                  FreeSpaceGB = [math]::Round($_.SizeRemaining/1GB, 2)
+                  FreeSpacePercent = if ($_.Size -gt 0) { [math]::Round(($_.SizeRemaining/$_.Size)*100, 2) } else { 0 }
+              }
+            } | ConvertTo-Json
+          register: volumes
+
+        - name: Convertir resultado a lista de diccionarios
+          set_fact:
+            volumesdic: "{{ volumes.stdout | from_json }}"
+
+        - name: Muestra diccionario por pantalla
+          debug:
+            var: volumesdic
+
         ######################################################################
         # ESCRIBIR RESULTADOS EN LOG
         ######################################################################
         - name: Escribir resultados encuesta en LOG 
           ansible.builtin.shell:
-            cmd: "echo {{ timestamp_result.stdout }} - {{ inventory_hostname }} - CONECTIVIDAD: {{ conectividad }} - S.O.: {{ so }} - ARQUITECTURA: {{ arqu_bits.stdout }} >> {{ path_local }}/{{ log_file }}"
+            cmd: "echo '{{ timestamp_result.stdout }} - {{ inventory_hostname }} - CONECTIVIDAD: {{ conectividad }} - S.O.: {{ so }} - ARQUITECTURA: {{ arqu_bits.stdout }}' >> {{ path_local }}/{{ log_file }}"
+          delegate_to: localhost
+          register: resultado
+        
+        - name: Escribir resultados unidades lógicas en LOG 
+          ansible.builtin.shell:
+            cmd: "echo '{{ timestamp_result.stdout }} - {{ inventory_hostname }} - Información de drives: {{ volumesdic }}' >> {{ path_local }}/{{ log_file }}"
           delegate_to: localhost
 
       when: port_check.failed == false
