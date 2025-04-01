@@ -1,0 +1,73 @@
+---
+- name: Verificar estado de ax-pos y enviar resultado
+  hosts: all
+  gather_facts: no
+
+  serial: 20
+
+  tasks:
+
+    - name: Obtener el timestamp actual
+      ansible.builtin.shell:
+        cmd: date '+%Y-%m-%d %H:%M:%S'
+      register: timestamp
+      delegate_to: localhost
+      changed_when: false
+
+    - name: Verificar si el puerto 5985 está abierto
+      ansible.builtin.wait_for:
+        port: 5985
+        host: "{{ inventory_hostname }}"
+        timeout: 2  # Tiempo máximo de espera en segundos
+      delegate_to: localhost  # Ejecuta la tarea desde el nodo de control
+      register: port_status
+      changed_when: false
+      ignore_errors: yes
+    
+    - name: Ejecuta cuando hay conectividad al puerto
+      block:
+      - name: Verificar estado del servicio ax-pos
+        ansible.windows.win_service:
+          name: ax-pos
+        register: service_status
+        ignore_errors: yes
+
+      - name: Obtener sistema operativo
+        ansible.windows.win_shell: |
+          (Get-WmiObject Win32_OperatingSystem).Caption
+        register: os_info
+        changed_when: false
+        ignore_errors: yes
+
+      - name: Obtener archivos en D:\axteroid\ax-pos\lib\
+        ansible.windows.win_shell: |
+          Get-ChildItem -Path "D:\axteroid\ax-pos\lib\ax-pos-*" | Select-Object -ExpandProperty Name
+        register: files_found
+        changed_when: false
+        failed_when: false
+        ignore_errors: yes
+
+      - name: Procesar resultados
+        ansible.builtin.set_fact:
+          log_string: "{{ timestamp.stdout }},{{ inventory_hostname }},{{ service_status.state if service_status.failed == false else 'NO APLICA' }},{{ files_found.stdout_lines | first | default('NO APLICA') }},NO APLICA,NO APLICA,{{ os_info.stdout if port_status.failed == false else 'NO APLICA' }}"
+
+      - name: 4.- Enviar resultado a la URL vía GET desde la máquina local
+        ansible.builtin.shell: |
+          urlget="https://axteroid.ticproactive.net/capturalogscaner/?log={{ log_string | urlencode }}"
+          curl -X GET "$urlget" > /dev/null  
+        args:
+          chdir: "/root/fix-epel/windows"
+        delegate_to: localhost
+        ignore_errors: true
+
+      when: port_status.failed == false
+  
+    - name: En caso de error de puerto
+      ansible.builtin.shell: |
+        urlget="https://axteroid.ticproactive.net/capturalogscaner/?log={{ timestamp.stdout | urlencode }},{{ inventory_hostname }},PUERTO-NO-RESPONDE,NO-APLICA,NO-APLICA,NO-APLICA,NO-APLICA"
+        curl -X GET "$urlget" > /dev/null
+      args:
+        chdir: "/root/fix-epel/windows"
+      delegate_to: localhost
+      when: port_status.failed == true
+      ignore_errors: true

@@ -1,0 +1,218 @@
+- name: Update AX-POS Windows sin copiar
+  hosts: all
+  gather_facts: no
+  vars:
+    path_local: /root/fix-epel/windows
+    url_log: https://axteroid.ticproactive.net/capturalog/?log
+    path_axpos: "D:\\axteroid\\ax-pos"
+    path_destino: "D:\\tempax"
+    servicio: "ax-pos"
+    archivos:
+    - "lib"
+    - "tmpl"
+    - "ax-pos-PROD.bat"
+#   - "ax-pos-TEST.bat"
+    - "renombra.bat"
+
+  serial: 5
+
+  tasks:
+    ######################################################################
+    # Genera timestamp codificado para URL una sola vez
+    ######################################################################
+    - name: 1.- Obtener el timestamp actual
+      ansible.builtin.shell:
+        cmd: date '+%Y-%m-%d %H:%M:%S'
+      register: timestamp_result
+      delegate_to: localhost
+
+    - name: 2.- Codificar el timestamp
+      ansible.builtin.set_fact:
+        encoded_timestamp: "{{ timestamp_result.stdout | urlencode }}"
+      delegate_to: localhost
+
+    ######################################################################
+    # VERIFICA QUE EXISTA CONECTIVIDAD
+    ######################################################################
+    - name: 3.- Verificar si existe conectividad via WinRM
+      ansible.builtin.wait_for:
+        port: 5985
+        host: "{{ inventory_hostname }}"
+        timeout: 2  # Tiempo máximo de espera en segundos
+      delegate_to: localhost  # Ejecuta la tarea desde el nodo de control
+      ignore_errors: yes  # Ignora errores si el puerto no está disponible
+      register: port_check
+    
+    ######################################################################
+    # EJECUTA SI EXISTE CONECTIVIDAD
+    ######################################################################
+    - name: 3.1.- Ejecuta cuando conexión es exitosa
+      block:
+        ######################################################################
+        # OBTIENE FAMILIA DE SISTEMA OPERATIVO
+        ######################################################################
+        - name: 3.1.1.- Obtener sistema operativo
+          ansible.windows.win_shell: |
+            (Get-WmiObject Win32_OperatingSystem).Caption
+          register: os_info
+          changed_when: false
+          ignore_errors: yes
+        
+        - name: 3.1.1a.- Reserva valor del sistema operativo en variable
+          set_fact:
+            so: "{{ os_info.stdout_lines[0] }}"
+          when: os_info.rc == 0
+        
+        - name: 3.1.1b.- Ejecuta si la operación anterior falla
+          set_fact:
+            so: "Windows (Error al obtener S. O.)"
+          when: os_info.rc != 0 or os_info.failed or os_info.stderr != ""
+
+        ######################################################################
+        # VERIFICA ESTADO INICIAL DEL SERVICIO
+        ######################################################################
+        - name: 3.1.2.- Verifica estado inicial del servicio
+          ansible.windows.win_service_info:
+            name: "{{ servicio }}"
+          register: service_info1
+          ignore_errors: yes
+        
+        - name: 3.1.2a.- Reserva estado inicial del seervicio en variable para posterior GET
+          set_fact:
+            stat_serv_ini: "{{ service_info1.services[0].state }}"
+          when: service_info1.exists
+
+        - name: 3.1.2b.- Reserva estado inicial del seervicio en variable para posterior GET
+          set_fact:
+            stat_serv_ini: "Error al obtener infomrmacion del servicio"
+          when: not service_info1.exists
+    
+        ######################################################################
+        # OBTIENE VERSION ACTUAL
+        ######################################################################
+        - name: 3.1.3.- Obtener version inicial - Revisa jar existente en carpeta lib
+          win_find:
+            paths: "{{ path_axpos }}\\lib"
+            patterns: "ax-pos-*"
+          register: archivos_encontrados1
+          ignore_errors: yes
+        
+        - name: 3.1.4.- Reserva versión inicial en variable para posterior GET
+          set_fact:
+            ver_inicial: "{{ archivos_encontrados1.files[0].filename | default('Error al obtener version') }}"
+
+        ######################################################################
+        # DETIENE SERVICIO AX-POS
+        ######################################################################
+        - name: 3.1.5.- Detener servicio
+          ansible.windows.win_service:
+            name: "{{ servicio }}"
+            state: stopped
+          when: service_info1.exists
+    
+        ######################################################################
+        # RESPALDA Y COPiA ARCHIVOS MEDIANTE EJECUCIÓN DE BAT REMOTO
+        ######################################################################
+        - name: 3.1.6.- Ejecuta BAT remoto
+          ansible.windows.win_command: |
+            D:\tempax\renombra.bat
+          args:
+            chdir: "{{ path_destino }}\\"
+          register: bat_salida
+          ignore_errors: yes
+        
+        ######################################################################
+        # ELIMINA BAT REMOTO
+        ######################################################################
+        #- name: 3.1.7.- Elimina bat remoto
+        #  win_shell: |
+        #    del "{{ path_destino }}\\renombra.bat"
+        #  ignore_errors: yes
+        #  when: bat_salida.rc == 0
+
+        ######################################################################
+        # INICIA SERVICIO AX-POS
+        ######################################################################
+        - name: 3.1.8.- Iniciar servicio ax-pos
+          ansible.windows.win_service:
+            name: "{{ servicio }}"
+            state: started
+          when: service_info1.exists
+
+        ######################################################################
+        # OBTIENE ESTADO FINAL DEL SERVICIO
+        ######################################################################
+        - name: 3.1.9.- Verificar estado final del servicio
+          ansible.windows.win_service_info:
+            name: "{{ servicio }}"
+          register: service_info2
+          ignore_errors: yes
+
+        - name: 3.1.9a.- Reserva estado final del seervicio en variable para posterior GET
+          set_fact:
+            stat_serv_fin: "{{ service_info2.services[0].state }}"
+          when: service_info2.exists
+
+        - name: 3.1.9b.- Escribe error en variable para posterior GET
+          set_fact:
+            stat_serv_fin: "Error al obtener infomrmacion del servicio"
+          when: not service_info2.exists
+
+        ######################################################################
+        # INFORMA SI AX-POS FUE ACTUALIZADO
+        ######################################################################
+        - name: 3.1.10.- Obtener version final - Revisa jar existente en carpeta lib
+          win_find:
+            paths: "{{ path_axpos }}\\lib"
+            patterns: "ax-pos-*"
+          register: archivos_encontrados2
+          ignore_errors: yes
+
+        - name: 3.1.10a.- Reserva versión final en variable para posterior GET
+          set_fact:
+            ver_final: "{{ archivos_encontrados2.files[0].filename | default('Error al obtener version') }}"
+          when: bat_salida.rc == 0
+        
+        - name: 3.1.10b.- Escribe error en caso de no ejecucion del bat
+          set_fact:
+            ver_final: "{{ bat_salida.stdout_lines[0] }}"
+          when: bat_salida.rc != 0
+
+        ######################################################################
+        # GENERA LOG Y CARGA EN URL
+        ######################################################################
+        - name: 3.1.11.- Enviar resultado a la URL vía GET desde la máquina local
+          ansible.builtin.shell: |
+            linealog="{{ encoded_timestamp }},{{ inventory_hostname }},{{ stat_serv_ini }},{{ ver_inicial }},{{ stat_serv_fin }},{{ ver_final }},{{ so | urlencode }}"
+            curl -X GET "https://axteroid.ticproactive.net/capturalog/?log=$linealog"
+          args:
+            chdir: "{{ path_local }}"
+          register: result
+          delegate_to: localhost
+        
+        - name: muestra resultado de CURL por pantalla
+          debug:
+            var: result
+
+      when: port_check.failed == false
+
+    ######################################################################
+    # EJECUTA SI NO EXISTE CONECTIVIDAD
+    ######################################################################
+    - name: 3.2.- Ejecuta cuando conexión falla
+      block:
+        - name: 3.2.1.- Guarda resultado de port_check cuando falla
+          set_fact:
+              stat_conect: "Sin conexion"
+        ######################################################################
+        # GENERA LOG Y CARGA EN URL
+        ######################################################################
+        - name: 3.2.2.- Enviar resultado a la URL vía GET desde la máquina local
+          ansible.builtin.shell: |
+            linealog="{{ encoded_timestamp }},{{ inventory_hostname }},{{ stat_conect | urlencode }},NO-APLICA,NO-APLICA,NO-APLICA,WINDOWS"
+            curl -X GET "https://axteroid.ticproactive.net/capturalog/?log=$linealog"
+          args:
+            chdir: "{{ path_local }}"
+          register: result
+          delegate_to: localhost
+      when: port_check.failed == true
