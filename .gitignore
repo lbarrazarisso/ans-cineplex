@@ -1,4 +1,9 @@
 inventory.ini
 revision-con-so-arq-gf.yaml
-revision-con-so-arq.yaml
+# revision-con-so-arq.yaml
 revision-copia.yaml
+axpos-deployment.code-workspace
+hosts.txt
+obtiene-so-20250401-154211.log
+obtiene-so-20250401-154311.log
+obtiene-so.ps1

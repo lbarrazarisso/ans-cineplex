@@ -1,0 +1,132 @@
+- name: verificar conectividad, sistema operativo y arquitectura
+  hosts: all
+  gather_facts: no
+  vars:
+    path_local: /home/admincp/axpos-deployment
+    log_file: revision_conect-so-arqu-ul.log
+
+  serial: 10
+
+  tasks:
+    ######################################################################
+    # Genera timestamp codificado para URL una sola vez
+    ######################################################################
+    - name: 1.- Obtener el timestamp actual
+      ansible.builtin.shell:
+        cmd: date '+%Y-%m-%d %H:%M:%S'
+      register: timestamp_result
+      delegate_to: localhost
+
+    - name: 2.- Codificar el timestamp
+      ansible.builtin.set_fact:
+        encoded_timestamp: "{{ timestamp_result.stdout | urlencode }}"
+      delegate_to: localhost
+
+    - name: Inicializa conectividad en NO HAY
+      set_fact:
+        conectividad: "NO-HAY"
+
+    ######################################################################
+    # VERIFICA QUE EXISTA CONECTIVIDAD
+    ######################################################################
+    - name: 3.- Verificar si existe conectividad via WinRM
+      ansible.builtin.wait_for:
+        port: 5985
+        host: "{{ inventory_hostname }}"
+        timeout: 2  # Tiempo máximo de espera en segundos
+      delegate_to: localhost  # Ejecuta la tarea desde el nodo de control
+      changed_when: false
+      ignore_errors: yes  # Ignora errores si el puerto no está disponible
+      register: port_check
+    
+    ######################################################################
+    # EJECUTA SI EXISTE CONECTIVIDAD
+    ######################################################################
+
+    - name: Encuesta Host
+      block:
+
+        - name: Guarda status conectividad OK
+          set_fact:
+            conectividad: "OK"
+
+        ######################################################################
+        # OBTIENE SISTEMA OPERATIVO
+        ######################################################################
+        - name: 3.1.1.- Obtener sistema operativo
+          ansible.windows.win_shell: |
+            (Get-WmiObject Win32_OperatingSystem).Caption
+          register: os_info
+          changed_when: false
+          ignore_errors: yes
+        
+        - name: 3.1.1a.- Reserva valor del sistema operativo en variable
+          set_fact:
+            so: "{{ os_info.stdout_lines[0] }}"
+          when: os_info.rc == 0
+        
+        - name: 3.1.1b.- Ejecuta si la operación anterior falla
+          set_fact:
+            so: "Windows (Error al obtener S. O.)"
+          when: os_info.rc != 0 or os_info.failed or os_info.stderr != ""
+
+        ######################################################################
+        # OBTIENE ARQUITECTURA
+        ######################################################################
+
+        - name: Obtener arquitectura (bits)
+          ansible.windows.win_shell: |
+            if([Environment]::Is64BitOperatingSystem) { '64' } else { '32' }
+          register: arqu_bits
+            #echo $([System.Environment]::Is64BitOperatingSystem ? "64" : "32")
+
+        ######################################################################
+        # OBTIENE UNIDADES LÓGICAS Y ESPACIOS DISPONIBLES
+        ######################################################################
+
+        - name: Get logical drives information
+          win_shell: |
+            Get-Volume | Where-Object {$_.DriveLetter} | ForEach-Object {
+              [PSCustomObject]@{
+                  DriveLetter = $_.DriveLetter
+                  Label = $_.FileSystemLabel
+                  TotalSizeGB = [math]::Round($_.Size/1GB, 2)
+                  FreeSpaceGB = [math]::Round($_.SizeRemaining/1GB, 2)
+                  FreeSpacePercent = if ($_.Size -gt 0) { [math]::Round(($_.SizeRemaining/$_.Size)*100, 2) } else { 0 }
+              }
+            } | ConvertTo-Json
+          register: volumes
+
+        - name: Convertir resultado a lista de diccionarios
+          set_fact:
+            volumesdic: "{{ volumes.stdout | from_json }}"
+
+        - name: Muestra diccionario por pantalla
+          debug:
+            var: volumesdic
+
+        ######################################################################
+        # ESCRIBIR RESULTADOS EN LOG
+        ######################################################################
+        - name: Escribir resultados encuesta en LOG 
+          ansible.builtin.shell:
+            cmd: "echo '{{ timestamp_result.stdout }} - {{ inventory_hostname }} - CONECTIVIDAD: {{ conectividad }} - S.O.: {{ so }} - ARQUITECTURA: {{ arqu_bits.stdout }}' >> {{ path_local }}/{{ log_file }}"
+          delegate_to: localhost
+          register: resultado
+        
+        - name: Escribir resultados unidades lógicas en LOG 
+          ansible.builtin.shell:
+            cmd: "echo '{{ timestamp_result.stdout }} - {{ inventory_hostname }} - Información de drives: {{ volumesdic }}' >> {{ path_local }}/{{ log_file }}"
+          delegate_to: localhost
+
+      when: port_check.failed == false
+
+    ######################################################################
+    # EJECUTA SI NO EXISTE CONECTIVIDAD
+    ######################################################################
+
+    - name: Escribir si NO existe conectividad
+      ansible.builtin.shell:
+        cmd: "echo {{ timestamp_result.stdout }} - {{ inventory_hostname }} - CONECTIVIDAD: {{ conectividad }} - S.O.: WINDOWS - ARQUITECTURA: [ERROR] >> {{ path_local }}/{{ log_file }}"
+      delegate_to: localhost
+      when: port_check.failed
