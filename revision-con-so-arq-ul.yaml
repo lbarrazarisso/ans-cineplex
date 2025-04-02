@@ -11,6 +11,7 @@
     ######################################################################
     # Genera timestamp codificado para URL una sola vez
     ######################################################################
+
     - name: 1.- Obtener el timestamp actual
       ansible.builtin.shell:
         cmd: date '+%Y-%m-%d %H:%M:%S'
@@ -29,6 +30,7 @@
     ######################################################################
     # VERIFICA QUE EXISTA CONECTIVIDAD
     ######################################################################
+
     - name: 3.- Verificar si existe conectividad via WinRM
       ansible.builtin.wait_for:
         port: 5985
@@ -53,6 +55,7 @@
         ######################################################################
         # OBTIENE SISTEMA OPERATIVO
         ######################################################################
+
         - name: 3.1.1.- Obtener sistema operativo
           ansible.windows.win_shell: |
             (Get-WmiObject Win32_OperatingSystem).Caption
@@ -65,7 +68,7 @@
             so: "{{ os_info.stdout_lines[0] }}"
           when: os_info.rc == 0
         
-        - name: 3.1.1b.- Ejecuta si la operación anterior falla
+        - name: 3.1.1b.- Ejecuta si la obtencion de S.O. falla
           set_fact:
             so: "Windows (Error al obtener S. O.)"
           when: os_info.rc != 0 or os_info.failed or os_info.stderr != ""
@@ -78,8 +81,19 @@
           ansible.windows.win_shell: |
             if([Environment]::Is64BitOperatingSystem) { '64' } else { '32' }
           register: arqu_bits
-            #echo $([System.Environment]::Is64BitOperatingSystem ? "64" : "32")
-
+          changed_when: false
+          ignore_errors: yes
+        
+        - name: Reserva valor de arquitectura en variable
+          set_fact:
+            arquitectura: "{{ arqu_bits.stdout_lines[0] }}"
+          when: arqu_bits.rc == 0
+        
+        - name: Ejecuta si la obtención de arquitectura falla
+          set_fact:
+            arquitectura: "Desconocido (Error al obtener arquitectura)"
+          when: arqu_bits.rc != 0 or arqu_bits.failed or arqu_bits.stderr != ""
+        
         ######################################################################
         # OBTIENE UNIDADES LÓGICAS Y ESPACIOS DISPONIBLES
         ######################################################################
@@ -96,21 +110,26 @@
               }
             } | ConvertTo-Json
           register: volumes
-
+          changed_when: false
+          ignore_errors: yes
+        
         - name: Convertir resultado a lista de diccionarios
           set_fact:
             volumesdic: "{{ volumes.stdout | from_json }}"
-
-        - name: Muestra diccionario por pantalla
-          debug:
-            var: volumesdic
+          when: volumes.rc == 0
+        
+        - name: Ejecuta si la obtención de drives falla
+          set_fact:
+            volumesdic: "Error al obtener logical drives"
+          when: volumes.rc != 0 or volumes.failed or volumes.stderr != ""
 
         ######################################################################
         # ESCRIBIR RESULTADOS EN LOG
         ######################################################################
+
         - name: Escribir resultados encuesta en LOG 
           ansible.builtin.shell:
-            cmd: "echo '{{ timestamp_result.stdout }} - {{ inventory_hostname }} - CONECTIVIDAD: {{ conectividad }} - S.O.: {{ so }} - ARQUITECTURA: {{ arqu_bits.stdout }}' >> {{ path_local }}/{{ log_file }}"
+            cmd: "echo '{{ timestamp_result.stdout }} - {{ inventory_hostname }} - CONECTIVIDAD: {{ conectividad }} - S.O.: {{ so }} - ARQUITECTURA: {{ arquitectura }}' >> {{ path_local }}/{{ log_file }}"
           delegate_to: localhost
           register: resultado
         
